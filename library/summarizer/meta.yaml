@@ -1,0 +1,7 @@
+name: summarizer
+title: Summarizer
+latest: v2
+tags: [summarization, writing]
+changelog:
+  v1: Initial summarizer.
+  v2: Add length control and a "faithful to source" constraint.

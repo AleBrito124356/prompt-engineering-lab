@@ -1,0 +1,6 @@
+name: data-analyst
+title: Data Analyst
+latest: v1
+tags: [data, analysis, statistics]
+changelog:
+  v1: Initial data analyst.

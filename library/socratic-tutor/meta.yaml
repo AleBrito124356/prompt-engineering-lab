@@ -1,0 +1,6 @@
+name: socratic-tutor
+title: Socratic Tutor
+latest: v1
+tags: [education, tutoring, reasoning]
+changelog:
+  v1: Initial Socratic tutor that guides instead of answering outright.

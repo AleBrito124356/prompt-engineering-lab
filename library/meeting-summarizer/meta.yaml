@@ -1,0 +1,6 @@
+name: meeting-summarizer
+title: Meeting Summarizer
+latest: v1
+tags: [summarization, meetings, productivity]
+changelog:
+  v1: Initial meeting summarizer producing decisions and action items.

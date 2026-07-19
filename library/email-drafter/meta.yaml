@@ -1,0 +1,6 @@
+name: email-drafter
+title: Email Drafter
+latest: v1
+tags: [writing, email, communication]
+changelog:
+  v1: Initial email drafter with tone control and a subject line.

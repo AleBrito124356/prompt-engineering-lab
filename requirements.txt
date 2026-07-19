@@ -1,0 +1,7 @@
+# Core runtime
+openai>=1.30.0          # OpenAI-compatible SDK, used to call NVIDIA NIM
+pyyaml>=6.0            # front-matter and meta.yaml parsing
+python-dotenv>=1.0.0   # load NVIDIA_API_KEY from a local .env (optional but handy)
+
+# Development / tests
+pytest>=8.0.0

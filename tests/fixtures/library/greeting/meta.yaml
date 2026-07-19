@@ -1,0 +1,7 @@
+name: greeting
+title: Greeting
+latest: v2
+tags: [demo, fixture]
+changelog:
+  v1: First cut.
+  v2: Add optional formal register and a shared signature partial.

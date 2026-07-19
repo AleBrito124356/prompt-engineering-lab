@@ -1,0 +1,7 @@
+name: sql-expert
+title: SQL Expert
+latest: v2
+tags: [sql, data, databases]
+changelog:
+  v1: Initial SQL expert.
+  v2: Require dialect-correct syntax, an EXPLAIN-readiness note, and a safety check for destructive statements.

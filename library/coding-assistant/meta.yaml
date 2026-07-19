@@ -1,0 +1,7 @@
+name: coding-assistant
+title: Coding Assistant
+latest: v2
+tags: [coding, engineering, debugging]
+changelog:
+  v1: Initial coding assistant.
+  v2: Add explicit assumptions section, require runnable examples, and a review checklist.

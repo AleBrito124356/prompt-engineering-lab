@@ -1,0 +1,6 @@
+name: classifier
+title: Label Classifier
+latest: v1
+tags: [classification, nlp]
+changelog:
+  v1: Initial single-label classifier with a fixed label set.

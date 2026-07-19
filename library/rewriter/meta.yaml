@@ -1,0 +1,6 @@
+name: rewriter
+title: Rewriter
+latest: v1
+tags: [writing, editing, tone]
+changelog:
+  v1: Initial tone-controlled rewriter that preserves meaning.

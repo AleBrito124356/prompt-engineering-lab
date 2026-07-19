@@ -1,0 +1,6 @@
+name: prompt-improver
+title: Prompt Improver
+latest: v1
+tags: [prompt-engineering, meta, review]
+changelog:
+  v1: Initial prompt critic that rewrites weak prompts and explains the changes.

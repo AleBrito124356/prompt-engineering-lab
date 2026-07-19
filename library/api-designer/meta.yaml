@@ -1,0 +1,6 @@
+name: api-designer
+title: API Designer
+latest: v1
+tags: [api, design, rest, backend]
+changelog:
+  v1: Initial REST API designer with resource modeling and error conventions.

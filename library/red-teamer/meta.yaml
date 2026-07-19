@@ -1,0 +1,6 @@
+name: red-teamer
+title: Red Teamer
+latest: v1
+tags: [security, testing, review, adversarial]
+changelog:
+  v1: Initial constructive red-team reviewer for plans, systems, and prompts.

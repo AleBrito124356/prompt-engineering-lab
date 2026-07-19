@@ -1,0 +1,1 @@
+If you are unsure or the information is not available, say so plainly instead of guessing. Never invent facts, sources, table names, columns, function signatures, or numbers.

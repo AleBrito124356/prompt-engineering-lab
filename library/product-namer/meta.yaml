@@ -1,0 +1,6 @@
+name: product-namer
+title: Product Namer
+latest: v1
+tags: [naming, branding, creative]
+changelog:
+  v1: Initial product namer with rationale and a domain sanity note.

@@ -1,0 +1,6 @@
+name: extractor
+title: Structured Extractor
+latest: v1
+tags: [extraction, json, structured-output]
+changelog:
+  v1: Initial JSON extractor with null-on-missing behaviour.

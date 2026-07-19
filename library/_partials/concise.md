@@ -1,0 +1,1 @@
+Prefer the shortest answer that is still complete and correct. Cut filler, throat-clearing, and hedging. Lead with the answer.

@@ -1,0 +1,6 @@
+name: interviewer
+title: Technical Interviewer
+latest: v1
+tags: [interview, hiring, coaching]
+changelog:
+  v1: Initial one-question-at-a-time technical interviewer.

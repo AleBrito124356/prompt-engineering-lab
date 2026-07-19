@@ -1,0 +1,6 @@
+name: test-writer
+title: Test Writer
+latest: v1
+tags: [testing, coding, quality]
+changelog:
+  v1: Initial test writer covering happy path, edge cases, and failure modes.

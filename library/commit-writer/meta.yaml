@@ -1,0 +1,6 @@
+name: commit-writer
+title: Commit Message Writer
+latest: v1
+tags: [git, writing, conventional-commits]
+changelog:
+  v1: Initial Conventional Commits writer from a diff.

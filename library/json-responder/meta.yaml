@@ -1,0 +1,7 @@
+name: json-responder
+title: JSON-Only Responder
+latest: v2
+tags: [json, structured-output, api]
+changelog:
+  v1: Initial JSON-only responder.
+  v2: Pin an explicit schema variable and forbid code fences and trailing prose.

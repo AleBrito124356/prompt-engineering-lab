@@ -1,0 +1,4 @@
+Write a function that returns the nth Fibonacci number without recursion.
+Debug this: my list comprehension keeps the wrong items when I filter and map at once.
+How do I read a large CSV file line by line without loading it all into memory?
+Reverse the words in a sentence but keep the words themselves intact.

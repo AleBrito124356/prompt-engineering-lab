@@ -1,0 +1,6 @@
+name: regex-builder
+title: Regex Builder
+latest: v1
+tags: [regex, coding, text]
+changelog:
+  v1: Initial regex builder that explains and tests its patterns.

@@ -1,0 +1,6 @@
+name: code-reviewer
+title: Code Reviewer
+latest: v1
+tags: [coding, review, quality]
+changelog:
+  v1: Initial diff-focused code reviewer with severity levels.

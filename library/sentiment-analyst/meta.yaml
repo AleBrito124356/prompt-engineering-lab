@@ -1,0 +1,6 @@
+name: sentiment-analyst
+title: Sentiment Analyst
+latest: v1
+tags: [classification, nlp, sentiment]
+changelog:
+  v1: Initial sentiment analyst returning label, score, and evidence.
