@@ -192,6 +192,10 @@ def test_rag_run_and_citation_check():
         ("Both facts are covered [1, 3] and [2-3].", {"cited": [1, 2, 3], "ok": True}),
         ("I don't know based on the provided context.", {"abstained": True, "ok": True}),
         ("The canal is long and old.", {"cited": [], "ok": False}),
+        ("The canal is about 82.5 kilometers long [2].", {"uncited": [], "ok": True}),
+        ("It is about 82 kilometers long. [2] The locks opened in 2016. [3]", {"uncited": [], "ok": True}),
+        ("It is about 82 kilometers long [2]. It opened in 1914 with fanfare.",
+         {"uncited": ["It opened in 1914 with fanfare."], "ok": False}),
     ],
 )
 def test_check_citations_cases(answer, expected):

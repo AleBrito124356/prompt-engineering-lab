@@ -387,7 +387,7 @@ prompt-engineering-lab/
 ## Tests
 
 ```bash
-pytest -q                                   # 359 tests, no API key, no network
+pytest -q                                   # 362 tests, no API key, no network
 pytest -q --cov=promptlab                   # ~96% line coverage
 ```
 

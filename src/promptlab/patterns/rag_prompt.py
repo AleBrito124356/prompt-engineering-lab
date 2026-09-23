@@ -57,7 +57,9 @@ def run(question, chunks, *, client=None, temperature=0.0):
 
 ABSTAIN = "I don't know based on the provided context."
 _CITATION_RE = re.compile(r"\[(\d+(?:\s*[,-]\s*\d+)*)\]")
-_SENTENCE_RE = re.compile(r"[^.!?]+[.!?]*")
+# Split after sentence punctuation followed by whitespace (so "82.5" stays whole),
+# but not when the next token is a citation ("...long. [2]" cites that sentence).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?!\[\d)")
 
 
 def _expand(group):
@@ -91,7 +93,7 @@ def check_citations(answer, n_chunks):
     invalid = sorted({n for n in numbers if not 1 <= n <= n_chunks})
     uncited = []
     if not abstained:
-        for sentence in _SENTENCE_RE.findall(text):
+        for sentence in _SENTENCE_SPLIT_RE.split(text):
             s = sentence.strip()
             if len(s.split()) >= 4 and not _CITATION_RE.search(s):
                 uncited.append(s)

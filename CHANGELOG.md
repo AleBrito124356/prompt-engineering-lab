@@ -16,7 +16,7 @@ An audit of 0.1.0 found that several technique modules failed on realistic model
 - `rag_prompt.check_citations()` reports cited, out-of-range and missing citations and detects abstention.
 - `guardrail_prompt.screen_input_detailed()` and `leak_scores()`. `tree_of_thought.run(verbose=True)` prints the beam search.
 - `template.variable_references()` returns each reference with its loop and guard context.
-- `CHANGELOG.md`, `pytest-cov` in the dev extras, and tests: 84 in 0.1.0, 359 now, with line coverage up from 59% to 96%.
+- `CHANGELOG.md`, `pytest-cov` in the dev extras, and tests: 84 in 0.1.0, 362 now, with line coverage up from 59% to 96%.
 
 ### Fixed
 
