@@ -12,6 +12,7 @@ The scoring and table rendering are pure functions (``parse_verdict``,
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
 
 from .client import NIMClient
@@ -63,26 +64,66 @@ class ComparisonResult:
     meta: dict = field(default_factory=dict)
 
 
-def parse_verdict(text):
-    """Extract '1', '2', or 'tie' from a judge response. Defaults to 'tie'."""
-    verdict = "tie"
-    for line in reversed(text.strip().splitlines()):
-        low = line.strip().lower()
-        if low.startswith("winner:"):
-            token = low.split(":", 1)[1].strip()
-            if token.startswith("1"):
-                return "1"
-            if token.startswith("2"):
-                return "2"
-            if "tie" in token or "draw" in token:
-                return "tie"
-    # Fallback: scan the whole text for a clear signal.
-    low = text.lower()
-    if "winner: 1" in low:
-        return "1"
-    if "winner: 2" in low:
-        return "2"
-    return verdict
+# Markdown emphasis / code / heading characters judges like to wrap verdicts in.
+_MARKDOWN_RE = re.compile(r"[*_`#>]+")
+# "Winner: ...", "Final verdict - ...", "Better response = ..." (after markdown is stripped).
+_VERDICT_LINE_RE = re.compile(
+    r"^\s*(?:final\s+)?(?:winner|verdict|better\s+response|preferred\s+response)\s*(?:is)?\s*[:=\-]\s*(.+)$",
+    re.IGNORECASE,
+)
+# Last-resort prose signal: "the winner is Response 2", "winner: 1". Digits only:
+# a bare letter in prose ("the winner is a close call") is not a verdict.
+_VERDICT_PROSE_RE = re.compile(
+    r"\bwinner\s*(?:is|:)\s*(?:response|answer|option|candidate)?\s*#?\s*([12])\b",
+    re.IGNORECASE,
+)
+_SLOT_RE = re.compile(
+    r"^(?:response|answer|option|candidate|assistant)?\s*#?\s*\(?\s*([12ab])\s*\)?(?![\w.])",
+    re.IGNORECASE,
+)
+_TIE_RE = re.compile(r"^(?:it'?s\s+a\s+)?(?:tie|draw|equal|even|neither|both|none)\b", re.IGNORECASE)
+_ORDINAL = {"first": "1", "second": "2"}
+_LETTER = {"1": "1", "2": "2", "a": "1", "b": "2"}
+
+
+def _parse_token(token):
+    """Map the text after 'Winner:' to '1', '2', 'tie', or None."""
+    token = token.strip().strip(" .!:;,'\"()[]").strip()
+    if not token:
+        return None
+    if _TIE_RE.match(token):
+        return "tie"
+    m = _SLOT_RE.match(token)
+    if m:
+        return _LETTER[m.group(1).lower()]
+    head = token.split()[0].lower()
+    if head in _ORDINAL:
+        return _ORDINAL[head]
+    return None
+
+
+def parse_verdict(text, default="tie"):
+    """Extract '1', '2', or 'tie' from a judge response.
+
+    Accepts the phrasings judges actually produce: ``Winner: 2``, ``Winner:
+    Response 2``, ``**Winner:** 2``, ``Winner: **2**``, ``Winner: B`` (A/B map to
+    1/2), ``Winner: first`` and ``Winner: tie`` / ``draw`` / ``equal`` /
+    ``neither``. The last verdict line wins. When nothing parses, ``default`` is
+    returned -- pass ``default=None`` to tell "unparseable" apart from a real tie.
+    """
+    lines = (text or "").strip().splitlines()
+    for line in reversed(lines):
+        clean = _MARKDOWN_RE.sub("", line)
+        m = _VERDICT_LINE_RE.match(clean)
+        if m:
+            token = _parse_token(m.group(1))
+            if token is not None:
+                return token
+    # Fallback: a clear prose signal anywhere ("... so the winner is Response 2").
+    matches = list(_VERDICT_PROSE_RE.finditer(_MARKDOWN_RE.sub("", text or "")))
+    if matches:
+        return _LETTER[matches[-1].group(1).lower()]
+    return default
 
 
 def _first_line_reason(text):

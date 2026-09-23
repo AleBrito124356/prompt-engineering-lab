@@ -11,23 +11,47 @@ votes can be counted. Cost scales linearly with the number of samples.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 
-from .chain_of_thought import build_messages, parse_final_answer
+from .chain_of_thought import build_messages, clean_answer, parse_final_answer
 from ._common import get_client, run_demo
+
+# A leading number: optional sign and currency, thousands separators, decimals,
+# an optional percent. It must be followed by the end, whitespace or a closing
+# bracket, so "12:30", "1/2" and "3x+1" are *not* read as numbers.
+_NUMBER_RE = re.compile(
+    r"^(?P<sign>[-+−])?\s*(?:[$€£¥]\s*)?"
+    r"(?P<int>\d{1,3}(?:,\d{3})+|\d+)(?P<frac>\.\d+)?"
+    r"(?P<pct>\s*(?:%|percent\b))?(?=$|\s|[)\]])",
+    re.IGNORECASE,
+)
 
 
 def _normalize(answer):
+    """Vote key for an answer: numbers compare as numbers, text case-folded.
+
+    ``"23"``, ``"23 apples"``, ``"**23**"``, ``"$23.00"`` and ``"23."`` all map
+    to ``"23"``; ``"1,000"`` to ``"1000"``; ``"50 percent"`` to ``"50%"``.
+    """
     if answer is None:
         return None
-    a = answer.strip().rstrip(".").strip()
-    # Normalise simple money/number answers so "$4" and "4 dollars" don't split votes.
-    stripped = a.replace("$", "").replace(",", "").strip()
-    try:
-        f = float(stripped)
-        return str(int(f)) if f.is_integer() else str(f)
-    except ValueError:
-        return a.lower()
+    a = clean_answer(str(answer))
+    if not a:
+        return None
+    m = _NUMBER_RE.match(a)
+    if m:
+        try:
+            value = Decimal(m.group("int").replace(",", "") + (m.group("frac") or ""))
+        except InvalidOperation:  # pragma: no cover - the regex only admits digits
+            value = None
+        if value is not None:
+            if m.group("sign") in ("-", "−"):
+                value = -value
+            text = str(int(value)) if value == value.to_integral_value() else format(value.normalize(), "f")
+            return text + ("%" if m.group("pct") else "")
+    return " ".join(a.lower().split())
 
 
 def majority_vote(answers):
@@ -39,7 +63,7 @@ def majority_vote(answers):
         if key is None:
             continue
         votes[key] += 1
-        display.setdefault(key, ans.strip() if isinstance(ans, str) else ans)
+        display.setdefault(key, clean_answer(str(ans)))
     if not votes:
         return None, votes
     winner_key, _ = votes.most_common(1)[0]

@@ -22,33 +22,65 @@ SYSTEM = (
     "prose, no markdown fences. Use null for unknown fields."
 )
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+# ```json ... ```, ``` ... ```, ```JSON{...}``` -- language tag in group 1, body in group 2.
+_FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\r?\n?(.*?)```", re.DOTALL)
+_DECODER = json.JSONDecoder()
 
 
 class JSONValidationError(ValueError):
     """Raised when extracted JSON fails schema validation."""
 
 
-def extract_json(text):
-    """Pull a JSON object out of a model response, tolerating fences and prose.
+def _first_embedded_object(text):
+    """Return ``(True, obj)`` for the first ``{`` that starts a valid JSON object.
 
-    Tries, in order: a fenced ```json block, the raw string, and the first
-    balanced ``{...}`` span. Raises ``ValueError`` if none parse.
+    Uses ``json.JSONDecoder.raw_decode`` from every ``{`` in turn, so braces in
+    surrounding prose ("note: {braces}") and a second object after the first
+    one do not break extraction. The outermost object wins because scanning is
+    left to right.
     """
-    candidates = []
-    fence = _FENCE_RE.search(text)
-    if fence:
-        candidates.append(fence.group(1).strip())
-    candidates.append(text.strip())
     start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidates.append(text[start : end + 1])
-    for candidate in candidates:
+    while start != -1:
         try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, TypeError):
+            obj, _end = _DECODER.raw_decode(text, start)
+        except json.JSONDecodeError:
+            start = text.find("{", start + 1)
             continue
+        return True, obj
+    return False, None
+
+
+def extract_json(text):
+    """Pull a JSON value out of a model response, tolerating fences and prose.
+
+    Tries, in order:
+
+    1. each fenced code block (```` ```json ```` blocks before untagged ones),
+       as a whole and then for an embedded object;
+    2. the whole response as JSON;
+    3. the first valid ``{...}`` object embedded anywhere in the prose.
+
+    Raises ``ValueError`` if none parse.
+    """
+    text = text or ""
+    fences = sorted(
+        _FENCE_RE.finditer(text), key=lambda m: 0 if m.group(1).lower() == "json" else 1
+    )
+    for fence in fences:
+        body = fence.group(2).strip()
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            found, obj = _first_embedded_object(body)
+            if found:
+                return obj
+    try:
+        return json.loads(text.strip())
+    except json.JSONDecodeError:
+        pass
+    found, obj = _first_embedded_object(text)
+    if found:
+        return obj
     raise ValueError("no valid JSON object found in response")
 
 
