@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0.0"]
+dev = ["pytest>=8.0.0", "pytest-cov>=4.0"]
 
 [project.scripts]
 promptlab = "promptlab.cli:main"
@@ -31,6 +31,12 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
+
+# Ship the prompt library inside the package so a normal (non-editable)
+# install works: promptlab/library/<name>/{meta.yaml,vN.md} + _partials/.
+[tool.setuptools.package-data]
+promptlab = ["library/*/*.md", "library/*/*.yaml", "library/_partials/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -37,6 +37,8 @@ __all__ = [
     "few_shot",
     "find_variables",
     "missing_variables",
+    "variable_references",
+    "VariableRef",
     "TemplateError",
     "TemplateSyntaxError",
     "MissingVariableError",
@@ -213,9 +215,12 @@ def _truthy(value):
     return bool(value)
 
 
-def _stringify(value, path, strict):
+def _stringify(value, path, strict, collector=None):
     if value is _MISSING:
         if strict:
+            if collector is not None:
+                collector.append(path)
+                return ""
             raise MissingVariableError(path)
         return ""
     if value is None:
@@ -228,14 +233,20 @@ def _stringify(value, path, strict):
 # --------------------------------------------------------------------------- #
 # Renderer
 # --------------------------------------------------------------------------- #
-def _render_nodes(nodes, ctx_stack, partials, strict, out, seen):
+def _render_nodes(nodes, ctx_stack, partials, strict, out, seen, collector=None):
+    """Render ``nodes`` into ``out``.
+
+    With ``collector`` (a list), a missing variable in strict mode is appended
+    to it instead of raising -- a dry run that finds *every* variable the real
+    render would fail on, following exactly the same branches and loop items.
+    """
     for node in nodes:
         if isinstance(node, tuple):
             kind = node[0]
             if kind == "text":
                 out.append(node[1])
             elif kind == "var":
-                out.append(_stringify(_resolve(node[1], ctx_stack), node[1], strict))
+                out.append(_stringify(_resolve(node[1], ctx_stack), node[1], strict, collector))
             elif kind == "partial":
                 name = node[1]
                 if name not in partials:
@@ -243,7 +254,7 @@ def _render_nodes(nodes, ctx_stack, partials, strict, out, seen):
                 if name in seen:
                     raise TemplateError("partial recursion detected: {!r}".format(name))
                 subtree = _parse(_tokenize(partials[name]))
-                _render_nodes(subtree, ctx_stack, partials, strict, out, seen | {name})
+                _render_nodes(subtree, ctx_stack, partials, strict, out, seen | {name}, collector)
             continue
 
         # block node (dict)
@@ -251,10 +262,10 @@ def _render_nodes(nodes, ctx_stack, partials, strict, out, seen):
         value = _resolve(node["arg"], ctx_stack)
         if kind == "if":
             branch = node["children"] if _truthy(value) else (node["else"] or [])
-            _render_nodes(branch, ctx_stack, partials, strict, out, seen)
+            _render_nodes(branch, ctx_stack, partials, strict, out, seen, collector)
         elif kind == "unless":
             branch = node["children"] if not _truthy(value) else (node["else"] or [])
-            _render_nodes(branch, ctx_stack, partials, strict, out, seen)
+            _render_nodes(branch, ctx_stack, partials, strict, out, seen, collector)
         elif kind == "each":
             items = value if _truthy(value) else []
             if isinstance(items, Mapping):
@@ -263,10 +274,10 @@ def _render_nodes(nodes, ctx_stack, partials, strict, out, seen):
                 for item in items:
                     frame = item if isinstance(item, Mapping) else {}
                     ctx_stack.append((frame, item))
-                    _render_nodes(node["children"], ctx_stack, partials, strict, out, seen)
+                    _render_nodes(node["children"], ctx_stack, partials, strict, out, seen, collector)
                     ctx_stack.pop()
             else:
-                _render_nodes(node["else"] or [], ctx_stack, partials, strict, out, seen)
+                _render_nodes(node["else"] or [], ctx_stack, partials, strict, out, seen, collector)
 
 
 # --------------------------------------------------------------------------- #
@@ -302,7 +313,10 @@ def _collect(nodes, roots, partials, in_each, seen_partials):
         child_in_each = in_each + (1 if node["kind"] == "each" else 0)
         _collect(node["children"], roots, partials, child_in_each, seen_partials)
         if node["else"]:
-            _collect(node["else"], roots, partials, child_in_each, seen_partials)
+            # The {{else}} of an #each renders when the list is empty, i.e. with
+            # the *outer* context -- its variables are not loop-local.
+            else_in_each = in_each if node["kind"] == "each" else child_in_each
+            _collect(node["else"], roots, partials, else_in_each, seen_partials)
 
 
 def find_variables(source, partials=None):
@@ -313,6 +327,10 @@ def find_variables(source, partials=None):
     argument of an ``#each`` or ``#if`` at the top level *is* reported, because
     it is resolved against the outer context. When ``partials`` is supplied,
     variables referenced by included partials are included too.
+
+    This is a purely static answer. Whether a name used inside a loop comes
+    from the items or from the outer context depends on the data, so
+    :func:`missing_variables` also dry-runs the template against the context.
     """
     tree = _parse(_tokenize(source))
     roots = set()
@@ -320,10 +338,132 @@ def find_variables(source, partials=None):
     return roots
 
 
-def missing_variables(source, context, partials=None):
-    """Return the sorted list of required root variables absent from ``context``."""
+def _dry_run_missing(tree, context, partials):
+    """Paths a strict render of ``tree`` with ``context`` would fail on."""
+    collector = []
     ctx = context or {}
-    return sorted(v for v in find_variables(source, partials) if v not in ctx)
+    try:
+        _render_nodes(tree, [(ctx, ctx)], partials or {}, True, [], frozenset(), collector)
+    except TemplateError:
+        # Unknown or recursive partials are reported by render() itself; this
+        # function only answers "which variables are missing".
+        pass
+    return collector
+
+
+def _report_name(path, context):
+    """Report the root when it is absent, else the full dotted path."""
+    root = _root(path) or path.strip()
+    return root if root not in (context or {}) else path.strip()
+
+
+def missing_variables(source, context, partials=None):
+    """Return the sorted variables a strict render with ``context`` would miss.
+
+    Combines two checks:
+
+    - the static one: every root variable :func:`find_variables` reports must
+      be a key of ``context`` (conservative: it also covers branches that this
+      particular context would not render);
+    - a dry run of the real render, which catches what static analysis cannot
+      see: outer variables used inside ``{{#each}}`` (``{{#each rules}}{{ prefix
+      }}{{/each}}`` needs ``prefix`` when the items are strings) and dotted paths
+      whose root exists but whose leaf does not (reported as ``user.email``).
+    """
+    ctx = context or {}
+    missing = {v for v in find_variables(source, partials) if v not in ctx}
+    for path in _dry_run_missing(_parse(_tokenize(source)), ctx, partials):
+        missing.add(_report_name(path, ctx))
+    return sorted(missing)
+
+
+class VariableRef:
+    """One variable reference found by :func:`variable_references`.
+
+    Attributes
+    ----------
+    root / path:
+        ``"user"`` / ``"user.name"``.
+    kind:
+        ``"var"`` for ``{{ x }}`` interpolation, ``"block"`` for the argument of
+        ``#if`` / ``#unless`` / ``#each``.
+    loops:
+        Arguments of the enclosing ``#each`` blocks, outermost first. Empty
+        when the reference is resolved against the outer context.
+    guards:
+        Roots of the enclosing conditions that must be truthy for this
+        reference to render (``#if`` then-branch, ``#unless`` else-branch).
+    partial:
+        Name of the partial the reference comes from, or ``None``.
+    """
+
+    __slots__ = ("root", "path", "kind", "loops", "guards", "partial")
+
+    def __init__(self, root, path, kind, loops=(), guards=frozenset(), partial=None):
+        self.root = root
+        self.path = path
+        self.kind = kind
+        self.loops = tuple(loops)
+        self.guards = frozenset(guards)
+        self.partial = partial
+
+    @property
+    def in_loop(self):
+        return bool(self.loops)
+
+    def __repr__(self):
+        return "VariableRef({!r}, kind={!r}, loops={}, guards={})".format(
+            self.path, self.kind, list(self.loops), sorted(self.guards)
+        )
+
+
+def _references(nodes, partials, loops, guards, partial, seen, out, unknown_partials):
+    for node in nodes:
+        if isinstance(node, tuple):
+            kind = node[0]
+            if kind == "var":
+                r = _root(node[1])
+                if r:
+                    out.append(VariableRef(r, node[1].strip(), "var", loops, guards, partial))
+            elif kind == "partial":
+                name = node[1]
+                if name not in partials:
+                    unknown_partials.append(name)
+                elif name not in seen:
+                    subtree = _parse(_tokenize(partials[name]))
+                    _references(subtree, partials, loops, guards, name, seen | {name}, out, unknown_partials)
+            continue
+
+        arg = node["arg"].strip()
+        r = _root(arg)
+        if r:
+            out.append(VariableRef(r, arg, "block", loops, guards, partial))
+        kind = node["kind"]
+        if kind == "each":
+            _references(node["children"], partials, loops + (arg,), guards, partial, seen, out, unknown_partials)
+            if node["else"]:
+                _references(node["else"], partials, loops, guards, partial, seen, out, unknown_partials)
+        else:
+            then_guards = guards | {r} if (r and kind == "if") else guards
+            else_guards = guards | {r} if (r and kind == "unless") else guards
+            _references(node["children"], partials, loops, then_guards, partial, seen, out, unknown_partials)
+            if node["else"]:
+                _references(node["else"], partials, loops, else_guards, partial, seen, out, unknown_partials)
+
+
+def variable_references(source, partials=None):
+    """Every variable reference in ``source`` with its loop and guard context.
+
+    Returns ``(references, unknown_partials)`` where ``references`` is a list of
+    :class:`VariableRef` (partials expanded) and ``unknown_partials`` lists the
+    ``{{> name }}`` includes that are not in ``partials``. Used by
+    ``promptlab lint`` to check a prompt's declared inputs against its body.
+    Raises ``TemplateSyntaxError`` for malformed templates.
+    """
+    tree = _parse(_tokenize(source))
+    refs, unknown = [], []
+    _references(tree, partials or {}, (), frozenset(), None, frozenset(), refs, unknown)
+    return refs, unknown
 
 
 # --------------------------------------------------------------------------- #
@@ -373,8 +513,8 @@ class Template:
         return find_variables(self.source, self.partials)
 
     def missing(self, context):
-        """Root variables required by this template but absent from ``context``."""
-        return sorted(v for v in self.variables if v not in (context or {}))
+        """Variables a strict render with ``context`` would miss (see ``missing_variables``)."""
+        return missing_variables(self.source, context, self.partials)
 
     def render(self, context=None, *, strict=True):
         out = []

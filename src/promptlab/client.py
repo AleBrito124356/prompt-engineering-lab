@@ -3,7 +3,13 @@
 NIM exposes an OpenAI-compatible endpoint, so we reuse the ``openai`` package.
 The API key is read from ``NVIDIA_API_KEY`` and the model from ``NIM_MODEL``
 (defaulting to ``meta/llama-3.3-70b-instruct``). If the key is missing we raise
-``MissingKeyError`` with a short signup walkthrough instead of a stack trace.
+``MissingKeyError`` carrying a short signup walkthrough; the CLI prints it as a
+one-line ``error:`` plus the walkthrough, never a stack trace. Failures reported
+by the ``openai`` SDK (network, auth, rate limits) surface as ``BackendError``.
+
+``ChatClient`` is the interface every backend shares -- ``chat`` plus the
+``complete`` and ``sample`` helpers built on it -- so the technique modules,
+the runner and ``compare`` work unchanged against NIM or an offline backend.
 """
 
 from __future__ import annotations
@@ -11,8 +17,10 @@ from __future__ import annotations
 import os
 
 __all__ = [
+    "ChatClient",
     "NIMClient",
     "MissingKeyError",
+    "BackendError",
     "get_openai_client",
     "DEFAULT_MODEL",
     "BASE_URL",
@@ -41,6 +49,16 @@ class MissingKeyError(RuntimeError):
         super().__init__(message)
 
 
+class BackendError(RuntimeError):
+    """A model call failed (network, authentication, rate limit, bad model id...)."""
+
+
+def _is_sdk_error(exc):
+    """True for exceptions raised by the ``openai`` SDK (or httpx underneath it)."""
+    module = type(exc).__module__ or ""
+    return module.split(".")[0] in ("openai", "httpx", "httpcore")
+
+
 def _load_dotenv():
     """Best-effort load of a local .env; a no-op if python-dotenv is absent."""
     try:
@@ -61,31 +79,13 @@ def get_openai_client():
     return OpenAI(base_url=BASE_URL, api_key=key)
 
 
-class NIMClient:
-    """Convenience wrapper around chat completions on NIM."""
+class ChatClient:
+    """Shared interface: subclasses implement ``chat``; ``complete``/``sample`` come free."""
 
-    def __init__(self, model=None, client=None):
-        self.model = model or os.environ.get("NIM_MODEL", DEFAULT_MODEL)
-        self._client = client
+    model = DEFAULT_MODEL
 
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = get_openai_client()
-        return self._client
-
-    def chat(self, messages, *, temperature=0.7, max_tokens=1024, n=1, **kwargs):
-        """Send chat ``messages``. Returns a string when ``n == 1``, else a list."""
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            n=n,
-            **kwargs,
-        )
-        contents = [choice.message.content for choice in resp.choices]
-        return contents[0] if n == 1 else contents
+    def chat(self, messages, *, temperature=0.7, max_tokens=1024, n=1, **kwargs):  # pragma: no cover
+        raise NotImplementedError
 
     def complete(self, user, *, system=None, **kwargs):
         """Single-turn helper: optional ``system`` prompt plus a ``user`` message."""
@@ -106,3 +106,40 @@ class NIMClient:
             self.chat(messages, temperature=temperature, max_tokens=max_tokens, n=1, **kwargs)
             for _ in range(n)
         ]
+
+
+class NIMClient(ChatClient):
+    """Convenience wrapper around chat completions on NIM."""
+
+    def __init__(self, model=None, client=None):
+        self.model = model or os.environ.get("NIM_MODEL", DEFAULT_MODEL)
+        self._client = client
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = get_openai_client()
+        return self._client
+
+    def chat(self, messages, *, temperature=0.7, max_tokens=1024, n=1, **kwargs):
+        """Send chat ``messages``. Returns a string when ``n == 1``, else a list."""
+        client = self.client  # MissingKeyError propagates unchanged
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                n=n,
+                **kwargs,
+            )
+        except Exception as exc:
+            if _is_sdk_error(exc):
+                raise BackendError(
+                    "NIM request to model {!r} failed: {}: {}".format(
+                        self.model, type(exc).__name__, exc
+                    )
+                ) from exc
+            raise
+        contents = [choice.message.content or "" for choice in resp.choices]
+        return contents[0] if n == 1 else contents

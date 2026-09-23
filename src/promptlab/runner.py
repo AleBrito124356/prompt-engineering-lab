@@ -8,19 +8,19 @@ message.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from .client import NIMClient
-from .prompt import PromptLibrary
+from .prompt import PromptLibrary, default_library_root
 
 __all__ = ["run_prompt", "render_prompt", "default_library"]
 
-_DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "library"
-
 
 def default_library(root=None):
-    """Return a :class:`PromptLibrary` for ``root`` (defaults to the repo library)."""
-    return PromptLibrary(root or _DEFAULT_ROOT)
+    """Return a :class:`PromptLibrary` for ``root``.
+
+    Defaults to ``$PROMPTLAB_LIBRARY`` when set, else the library bundled
+    inside the package (``promptlab/library``).
+    """
+    return PromptLibrary(root or default_library_root())
 
 
 def render_prompt(name, variables=None, *, version=None, root=None, strict=True):

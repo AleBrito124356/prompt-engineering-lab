@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from promptlab.prompt import Prompt, PromptError, PromptLibrary
+from promptlab.prompt import BUNDLED_LIBRARY, Prompt, PromptError, PromptLibrary
 
 FIXTURES = Path(__file__).parent / "fixtures" / "library"
 
@@ -73,8 +73,7 @@ def test_missing_prompt_raises(library):
 
 def test_bundled_library_loads():
     """The shipped library must load and expose the documented prompts."""
-    root = Path(__file__).resolve().parents[1] / "library"
-    lib = PromptLibrary(root)
+    lib = PromptLibrary(BUNDLED_LIBRARY)
     names = lib.names()
     assert len(names) >= 20
     for expected in ("coding-assistant", "sql-expert", "json-responder"):
