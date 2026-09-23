@@ -222,23 +222,71 @@ def cmd_run(args):
 
 
 def cmd_compare(args):
-    from .compare import render_table, run_comparison
+    from .compare import DEFAULT_CRITERIA, render_table, run_comparison, write_report
+
+    for out in args.out or []:
+        if Path(out).suffix.lower() not in (".json", ".md", ".markdown"):
+            raise CLIError("--out must end in .json or .md, got {!r}".format(out))
+    if args.repeats < 1:
+        raise CLIError("--repeats must be at least 1")
+    if not 0 < args.alpha < 1:
+        raise CLIError("--alpha must be between 0 and 1")
 
     lib = _library(args)
     variables = _collect_vars(args)
     name_a, ver_a = _split_ref(args.a)
     name_b, ver_b = _split_ref(args.b)
-    system_a = _render_checked(lib.get(name_a), variables, ver_a)
-    system_b = _render_checked(lib.get(name_b), variables, ver_b)
+    prompt_a, prompt_b = lib.get(name_a), lib.get(name_b)
+    system_a = _render_checked(prompt_a, variables, ver_a)
+    system_b = _render_checked(prompt_b, variables, ver_b)
     inputs = _read_inputs(args.inputs)
-    label_a = args.a
-    label_b = args.b
+    label_a, label_b = prompt_a.ref(ver_a), prompt_b.ref(ver_b)
+    if label_a == label_b:  # an A/A test is a useful judge sanity check
+        label_a, label_b = label_a + " (A)", label_b + " (B)"
+
     client = _make_client(args, model=args.model)
-    _note_offline(client)
+    judge = _make_client(args, model=args.judge_model) if args.judge_model else client
+    _note_offline(client, judge)
+    criteria = args.criteria or DEFAULT_CRITERIA
+
+    def progress(i, n, result):
+        if sys.stderr.isatty():
+            print("\r[{}/{}] judged".format(i, n), end="" if i < n else "\n", file=sys.stderr, flush=True)
+
     results = run_comparison(
-        system_a, system_b, inputs, client=client, label_a=label_a, label_b=label_b, seed=args.seed
+        system_a,
+        system_b,
+        inputs,
+        client=client,
+        judge=judge,
+        label_a=label_a,
+        label_b=label_b,
+        criteria=criteria,
+        temperature=args.temperature,
+        seed=args.seed,
+        both_orders=not args.single_order,
+        repeats=args.repeats,
+        on_progress=progress,
     )
-    print(render_table(results, label_a=label_a, label_b=label_b))
+    print(render_table(results, label_a=label_a, label_b=label_b, alpha=args.alpha))
+    config = {
+        "variant_a": label_a,
+        "variant_b": label_b,
+        "model": getattr(client, "model", None),
+        "judge_model": getattr(judge, "model", None),
+        "backend": _backend_spec(args) or "nim",
+        "judge_orders": "single (seeded shuffle)" if args.single_order else "both (A first, then B first)",
+        "repeats": args.repeats,
+        "temperature": args.temperature,
+        "alpha": args.alpha,
+        "seed": args.seed,
+        "criteria": criteria,
+        "inputs_file": args.inputs,
+        "variables": json.dumps(variables, ensure_ascii=False, sort_keys=True),
+    }
+    for out in args.out or []:
+        path = write_report(out, results, label_a, label_b, alpha=args.alpha, config=config)
+        print("report written: {}".format(path), file=sys.stderr)
     return 0
 
 
@@ -330,14 +378,31 @@ def build_parser():
     _add_backend_flags(p)
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("compare", help="A/B two prompts, judge-scored.")
+    p = sub.add_parser(
+        "compare",
+        help="A/B two prompts: both-order judging, win rate with CI, sign test.",
+        description="Run two prompt versions over an input set and let a judge pick the better answer. "
+        "Each pair is judged in both orders to cancel position bias; the verdict names a winner only "
+        "when a two-sided sign test is significant at --alpha.",
+    )
     p.add_argument("a", help="Prompt A as name or name@version.")
     p.add_argument("b", help="Prompt B as name or name@version.")
     p.add_argument("--inputs", required=True, metavar="FILE", help="JSON array or newline-delimited inputs.")
     p.add_argument("--var", action="append", metavar="KEY=VALUE")
     p.add_argument("--vars-json", metavar="FILE")
-    p.add_argument("--model", help="Override NIM_MODEL.")
-    p.add_argument("--seed", type=int, default=None, help="Seed for judge order shuffling.")
+    p.add_argument("--model", help="Model for the two variants (overrides NIM_MODEL).")
+    p.add_argument("--judge-model", metavar="MODEL", help="A different judge model (avoids self-preference).")
+    p.add_argument("--criteria", metavar="TEXT", help="What the judge should weigh (default: helpfulness, "
+                   "factual correctness and instruction following).")
+    p.add_argument("--repeats", type=int, default=1, metavar="N",
+                   help="Sample each variant N times per input; the input's winner is the majority.")
+    p.add_argument("--single-order", action="store_true",
+                   help="Judge each pair once in a random order (faster, no position-bias check).")
+    p.add_argument("--alpha", type=float, default=0.05, help="Significance level for the verdict (default 0.05).")
+    p.add_argument("--temperature", type=float, default=0.3, help="Sampling temperature for the variants.")
+    p.add_argument("--seed", type=int, default=None, help="Seed for the --single-order shuffle.")
+    p.add_argument("--out", action="append", metavar="FILE",
+                   help="Write a report: .json (full data, reloadable) or .md (readable). Repeatable.")
     _add_backend_flags(p)
     p.set_defaults(func=cmd_compare)
 

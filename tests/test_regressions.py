@@ -101,3 +101,78 @@ def test_check_output_flags_leak_of_later_sentences():
 
 def test_screen_input_does_not_flag_logged_out_message():
     assert gp.screen_input("The page says you are now logged out, where is my order?") == []
+
+
+# --------------------------------------------------------------------------- #
+# compare: a position-biased judge crowned a winner that flipped with the seed
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_position_biased_judge_no_longer_declares_a_winner(seed):
+    from promptlab.backends import ScriptedClient
+    from promptlab.compare import JUDGE_SYSTEM, NO_DIFFERENCE, run_comparison, tally
+
+    client = ScriptedClient(
+        rules=[(lambda m: m[0]["content"] == JUDGE_SYSTEM, "Winner: 1")], default="the exact same answer"
+    )
+    results = run_comparison("SA", "SB", ["i{}".format(i) for i in range(7)], client=client, seed=seed)
+    counts = tally(results, "v1", "v2")
+    assert (counts["v1"], counts["v2"], counts["ties"]) == (0, 0, 7)
+    assert counts["position_bias_rate"] == 1.0
+    assert counts["verdict"] == NO_DIFFERENCE
+
+
+# --------------------------------------------------------------------------- #
+# Template / contract: optional inputs were required, #each check was unsound
+# --------------------------------------------------------------------------- #
+def test_interviewer_renders_without_optional_level():
+    from promptlab.prompt import BUNDLED_LIBRARY, PromptLibrary
+
+    out = PromptLibrary(BUNDLED_LIBRARY).render("interviewer", {"role": "backend engineer"})
+    assert "backend engineer position" in out
+
+
+def test_outer_variable_inside_each_is_reported_missing():
+    from promptlab.template import missing_variables
+
+    src = "{{#each rules}}- {{ prefix }}: {{ this }}\n{{/each}}"
+    assert missing_variables(src, {"rules": ["a", "b"]}) == ["prefix"]
+
+
+# --------------------------------------------------------------------------- #
+# CLI: expected errors printed tracebacks
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "sql-expert", "--var", "dialect=PostgreSQL", "--user", "top 5"],
+        ["run", "sql-expert", "--user", "x"],
+        ["compare", "coding-assistant@v1", "coding-assistant@v2", "--inputs", "examples/coding-questions.txt"],
+        ["render", "sql-expert", "--vars-json", "VARS_LIST"],
+    ],
+)
+def test_cli_expected_errors_have_no_traceback(argv, tmp_path, monkeypatch, capsys):
+    import promptlab.client as client_mod
+    from promptlab.cli import main
+
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("PROMPTLAB_BACKEND", raising=False)
+    monkeypatch.setattr(client_mod, "_load_dotenv", lambda: None)
+    monkeypatch.chdir(SRC.parent)
+    vars_list = tmp_path / "vars.json"
+    vars_list.write_text("[1, 2]", encoding="utf-8")
+    argv = [str(vars_list) if a == "VARS_LIST" else a for a in argv]
+    assert main(argv) == 2
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error: ")
+    assert "Traceback" not in captured.err + captured.out
+
+
+# --------------------------------------------------------------------------- #
+# Packaging: the wheel shipped without the prompt library
+# --------------------------------------------------------------------------- #
+def test_default_library_is_inside_the_installed_package():
+    import promptlab
+    from promptlab.prompt import BUNDLED_LIBRARY, PromptLibrary
+
+    assert BUNDLED_LIBRARY.parent == Path(promptlab.__file__).resolve().parent
+    assert len(PromptLibrary(BUNDLED_LIBRARY).names()) >= 22
