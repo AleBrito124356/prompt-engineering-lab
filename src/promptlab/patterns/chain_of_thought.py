@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import re
 
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 SYSTEM = (
     "You solve problems by reasoning step by step. Think carefully, then state "
@@ -81,18 +82,39 @@ def run(question, *, client=None, temperature=0.2):
     return raw, parse_final_answer(raw)
 
 
-def main():
+DEMO_QUESTION = (
+    "A shop sells pens at 3 for $2. If I buy 18 pens and pay with a "
+    "$20 bill, how much change do I get?"
+)
+
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model).
+
+    The answer line is wrapped in markdown on purpose: ``parse_final_answer``
+    has to strip it, as it must with real model output.
+    """
+    return ScriptedClient(
+        [
+            "Pens are sold in groups of 3 for $2.\n"
+            "1. 18 pens / 3 pens per group = 6 groups.\n"
+            "2. 6 groups x $2 = $12.\n"
+            "3. Paying with a $20 bill: $20 - $12 = $8.\n\n"
+            "**Final answer:** $8"
+        ]
+    )
+
+
+def main(argv=None):
     def demo():
-        q = (
-            "A shop sells pens at 3 for $2. If I buy 18 pens and pay with a "
-            "$20 bill, how much change do I get?"
-        )
-        raw, answer = run(q)
+        raw, answer = run(DEMO_QUESTION)
         print("REASONING + ANSWER:\n{}".format(raw))
         print("\nPARSED FINAL ANSWER: {}".format(answer))
 
-    run_demo("Chain-of-thought prompting", demo)
+    return demo_main(
+        "Chain-of-thought prompting", demo, module="chain_of_thought", demo_client=demo_client, argv=argv
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

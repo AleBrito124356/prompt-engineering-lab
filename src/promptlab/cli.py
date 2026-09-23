@@ -26,14 +26,46 @@ import json
 import sys
 from pathlib import Path
 
+from .backends import ScriptedClient, backend_from_env, make_client
 from .client import BackendError, MissingKeyError
 from .patterns import TECHNIQUES
 from .prompt import PromptError, PromptLibrary, default_library_root
 from .template import TemplateError
 
+_OFFLINE_NOTE = (
+    "note: offline mode -- responses come from promptlab's scripted mock model, not a live LLM."
+)
+_KEY_HINT = "\n\nNo key yet? Add --offline to run the same command against the scripted mock backend."
+
 
 class CLIError(Exception):
     """A usage error: printed as ``error: <message>`` and exit code 2."""
+
+
+def _backend_spec(args):
+    if getattr(args, "offline", False):
+        return "mock"
+    if getattr(args, "record", None):
+        return "record:" + args.record
+    if getattr(args, "replay", None):
+        return "replay:" + args.replay
+    return backend_from_env()
+
+
+def _make_client(args, model=None):
+    """Client for ``run``/``compare`` from --offline/--record/--replay or $PROMPTLAB_BACKEND."""
+    try:
+        client = make_client(_backend_spec(args), model=model)
+    except ValueError as exc:
+        raise CLIError(str(exc)) from None
+    except BackendError as exc:  # e.g. the replay cassette does not exist
+        raise CLIError(str(exc)) from None
+    return client
+
+
+def _note_offline(*clients):
+    if any(isinstance(c, ScriptedClient) for c in clients):
+        print(_OFFLINE_NOTE, file=sys.stderr)
 
 
 def _library_root(args):
@@ -177,13 +209,12 @@ def cmd_render(args):
 
 
 def cmd_run(args):
-    from .client import NIMClient
-
     lib = _library(args)
     variables = _collect_vars(args)
     prompt = lib.get(args.name)
     system = _render_checked(prompt, variables, args.version)
-    client = NIMClient(model=args.model)
+    client = _make_client(args, model=args.model)
+    _note_offline(client)
     user = args.user if args.user is not None else "Begin."
     answer = client.complete(user, system=system, temperature=args.temperature, max_tokens=1024)
     print(answer)
@@ -191,7 +222,6 @@ def cmd_run(args):
 
 
 def cmd_compare(args):
-    from .client import NIMClient
     from .compare import render_table, run_comparison
 
     lib = _library(args)
@@ -203,7 +233,8 @@ def cmd_compare(args):
     inputs = _read_inputs(args.inputs)
     label_a = args.a
     label_b = args.b
-    client = NIMClient(model=args.model)
+    client = _make_client(args, model=args.model)
+    _note_offline(client)
     results = run_comparison(
         system_a, system_b, inputs, client=client, label_a=label_a, label_b=label_b, seed=args.seed
     )
@@ -245,13 +276,25 @@ def cmd_techniques(args):
     print("-" * 100)
     for t in TECHNIQUES:
         print("{:<{w}}  {:<28}  {}".format(t["name"], t["cost"], t["when"], w=width))
-    print("\nRun a live demo:  python -m promptlab.patterns.<technique>")
+    print("\nRun a live demo:     python -m promptlab.patterns.<technique>")
+    print("Run it offline:      python -m promptlab.patterns.<technique> --offline")
     return 0
 
 
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
+def _add_backend_flags(p):
+    group = p.add_mutually_exclusive_group()
+    group.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use the scripted mock backend: no API key, no network (same as PROMPTLAB_BACKEND=mock).",
+    )
+    group.add_argument("--record", metavar="CASSETTE", help="Call NIM and append every call to a JSONL cassette.")
+    group.add_argument("--replay", metavar="CASSETTE", help="Serve responses from a recorded JSONL cassette.")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="promptlab", description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -276,7 +319,7 @@ def build_parser():
     p.add_argument("--no-strict", action="store_true", help="Render missing variables as empty.")
     p.set_defaults(func=cmd_render)
 
-    p = sub.add_parser("run", help="Render a prompt and run it on NVIDIA NIM.")
+    p = sub.add_parser("run", help="Render a prompt and run it on NVIDIA NIM (or offline).")
     p.add_argument("name")
     p.add_argument("--version", "-V")
     p.add_argument("--user", "-u", help="The user turn to send.")
@@ -284,6 +327,7 @@ def build_parser():
     p.add_argument("--vars-json", metavar="FILE")
     p.add_argument("--model", help="Override NIM_MODEL.")
     p.add_argument("--temperature", type=float, default=0.3)
+    _add_backend_flags(p)
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("compare", help="A/B two prompts, judge-scored.")
@@ -294,6 +338,7 @@ def build_parser():
     p.add_argument("--vars-json", metavar="FILE")
     p.add_argument("--model", help="Override NIM_MODEL.")
     p.add_argument("--seed", type=int, default=None, help="Seed for judge order shuffling.")
+    _add_backend_flags(p)
     p.set_defaults(func=cmd_compare)
 
     p = sub.add_parser("diff", help="Diff two versions of a prompt.")
@@ -327,7 +372,7 @@ def main(argv=None):
     except (CLIError, PromptError, TemplateError) as exc:
         return _error(exc, 2)
     except MissingKeyError as exc:
-        return _error(exc, 2)
+        return _error(str(exc) + _KEY_HINT, 2)
     except BackendError as exc:
         return _error(exc, 1)
     except FileNotFoundError as exc:

@@ -1,14 +1,18 @@
-"""Render a library prompt with variables and run it on NVIDIA NIM.
+"""Render a library prompt with variables and run it on a model backend.
 
 The library prompts are *system* prompts: they define behaviour, and you then
 send an actual user turn. ``run_prompt`` renders the chosen version with your
-variables, uses it as the system message, and sends ``user_input`` as the user
-message.
+variables (defaults from its input contract filled in), uses it as the system
+message, and sends ``user_input`` as the user message.
+
+The model comes from ``client`` when given, else from ``backend`` (``"nim"``,
+``"mock"``, ``"record:FILE"``, ``"replay:FILE"``), else from
+``$PROMPTLAB_BACKEND``, else live NVIDIA NIM.
 """
 
 from __future__ import annotations
 
-from .client import NIMClient
+from .backends import make_client
 from .prompt import PromptLibrary, default_library_root
 
 __all__ = ["run_prompt", "render_prompt", "default_library"]
@@ -39,10 +43,11 @@ def run_prompt(
     root=None,
     client=None,
     model=None,
+    backend=None,
     temperature=0.3,
     max_tokens=1024,
 ):
-    """Render a library prompt and run it on NIM.
+    """Render a library prompt and run it.
 
     Parameters
     ----------
@@ -54,10 +59,12 @@ def run_prompt(
         The user turn. Optional -- some prompts embed the input via variables.
     version:
         Version spec (``"v2"``, ``"2"``, ``"latest"`` or ``None`` for latest).
+    client / backend / model:
+        An explicit client, or a backend spec and model for ``make_client``.
     """
     system = render_prompt(name, variables or {}, version=version, root=root)
-    nim = client or NIMClient(model=model)
+    llm = client or make_client(backend, model=model)
     user = user_input if user_input is not None else "Begin."
-    return nim.complete(
+    return llm.complete(
         user, system=system, temperature=temperature, max_tokens=max_tokens
     )

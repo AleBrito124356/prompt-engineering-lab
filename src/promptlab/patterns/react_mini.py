@@ -20,7 +20,8 @@ import math
 import operator
 import re
 
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 _ALLOWED_BINOPS = {
     ast.Add: operator.add,
@@ -192,17 +193,50 @@ def run(question, *, client=None, tools=None, max_steps=5, temperature=0.0, verb
     return None, transcript
 
 
-def main():
+DEMO_QUESTION = (
+    "If a recipe needs 3 eggs per cake and I bake 7 cakes, how many "
+    "eggs is that, and how many dozen does it round up to?"
+)
+
+_OBSERVATION_RE = re.compile(r"^Observation:\s*(.+)$", re.MULTILINE)
+
+
+def _final_from_observations(messages, params):
+    """Scripted last turn that *reads* the real tool results from the transcript."""
+    observations = _OBSERVATION_RE.findall(messages[-1]["content"])
+    eggs, dozens = (observations + ["?", "?"])[:2]
+    return (
+        "Thought: The calculator says {eggs} eggs, and rounding {eggs}/12 up gives {dozens}.\n"
+        "Final Answer: {eggs} eggs, which rounds up to {dozens} dozen.".format(eggs=eggs, dozens=dozens)
+    )
+
+
+def demo_client():
+    """Scripted model turns for ``--offline`` (illustrative, not a live model).
+
+    The model's *actions* are scripted; the observations are computed by the
+    real ``safe_calculator`` and the final turn quotes them back.
+    """
+    return ScriptedClient(
+        [
+            "Thought: I need the total eggs: 3 eggs per cake times 7 cakes.\n"
+            "Action: calculator\nAction Input: 3 * 7",
+            "Thought: Now round the eggs up to whole dozens: ceil(21 / 12) = (21 + 11) // 12.\n"
+            "Action: calculator\nAction Input: (21 + 11) // 12",
+            _final_from_observations,
+        ]
+    )
+
+
+def main(argv=None):
     def demo():
-        q = (
-            "If a recipe needs 3 eggs per cake and I bake 7 cakes, how many "
-            "eggs is that, and how many dozen does it round up to?"
-        )
-        answer, transcript = run(q, verbose=True)
+        answer, _transcript = run(DEMO_QUESTION, verbose=True)
         print("\nFINAL ANSWER: {}".format(answer))
 
-    run_demo("ReAct (reason + act with tools)", demo)
+    return demo_main(
+        "ReAct (reason + act with tools)", demo, module="react_mini", demo_client=demo_client, argv=argv
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

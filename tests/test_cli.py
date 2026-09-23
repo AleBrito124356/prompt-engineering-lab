@@ -78,7 +78,7 @@ def test_diff(capsys):
 
 def test_techniques(capsys):
     code, out, _ = run_cli(capsys, "techniques")
-    assert code == 0 and "self_consistency" in out
+    assert code == 0 and "self_consistency" in out and "--offline" in out
 
 
 def test_custom_library_flag(capsys):
@@ -173,7 +173,10 @@ def test_backend_error_exits_1(monkeypatch, capsys):
 
 def test_real_process_has_no_traceback_without_key():
     """Regression: `python cli.py run ...` printed a full traceback first."""
-    env = {k: v for k, v in __import__("os").environ.items() if k != "NVIDIA_API_KEY"}
+    env = {k: v for k, v in __import__("os").environ.items() if k != "PROMPTLAB_BACKEND"}
+    # Present-but-empty: python-dotenv never overrides it, so even a stray .env
+    # up the tree cannot turn this test into a live NIM call.
+    env["NVIDIA_API_KEY"] = ""
     proc = subprocess.run(
         [sys.executable, str(ROOT / "cli.py"), "run", "sql-expert", "--var", "dialect=PostgreSQL", "--user", "x"],
         capture_output=True,
@@ -185,3 +188,76 @@ def test_real_process_has_no_traceback_without_key():
     assert proc.returncode == 2
     assert "Traceback" not in proc.stderr + proc.stdout
     assert proc.stderr.startswith("error: NVIDIA_API_KEY is not set.")
+
+
+# -- offline / record / replay ---------------------------------------------- #
+def test_run_offline(capsys):
+    code, out, err = run_cli(capsys, "run", "sql-expert", "--var", "dialect=PostgreSQL", "--user", "top 5", "--offline")
+    assert code == 0
+    assert out.startswith("[offline mock response")
+    assert "You are a SQL expert writing PostgreSQL." in out
+    assert "note: offline mode" in err
+
+
+def test_run_offline_via_env(monkeypatch, capsys):
+    monkeypatch.setenv("PROMPTLAB_BACKEND", "mock")
+    code, out, _ = run_cli(capsys, "run", "interviewer", "--var", "role=backend engineer", "--user", "hi")
+    assert code == 0 and "backend engineer position" in out
+
+
+def test_compare_offline_end_to_end(capsys, monkeypatch):
+    monkeypatch.chdir(ROOT)
+    code, out, err = run_cli(
+        capsys, "compare", "coding-assistant@v1", "coding-assistant@v2", "--var", "language=Python",
+        "--inputs", "examples/coding-questions.txt", "--offline",
+    )
+    assert code == 0
+    assert "Offline heuristic judge" in out
+    assert "note: offline mode" in err
+
+
+def test_run_record_then_replay_gives_identical_output(tmp_path, monkeypatch, capsys):
+    import promptlab.backends as backends
+
+    cassette = tmp_path / "run.jsonl"
+    monkeypatch.setattr(backends, "NIMClient", lambda model=None: backends.ScriptedClient(["live answer"], model="m"))
+    args = ["run", "sql-expert", "--var", "dialect=SQLite", "--user", "count rows"]
+    code, recorded, _ = run_cli(capsys, *args, "--record", str(cassette))
+    assert code == 0 and recorded.strip() == "live answer"
+    code, replayed, _ = run_cli(capsys, *args, "--replay", str(cassette))
+    assert code == 0 and replayed == recorded
+    # a changed prompt is a clear cassette miss, not a silent live call
+    code, _, err = run_cli(capsys, "run", "sql-expert", "--var", "dialect=MySQL", "--user", "count rows",
+                           "--replay", str(cassette))
+    assert code == 1
+    assert "no recorded response" in err and "MySQL" in err and "SQLite" in err
+
+
+def test_backend_flag_errors(capsys, monkeypatch):
+    code, _, err = run_cli(capsys, "run", "sql-expert", "--var", "dialect=x", "--user", "q", "--replay", "nope.jsonl")
+    assert code == 2 and "cassette not found" in err
+    monkeypatch.setenv("PROMPTLAB_BACKEND", "bogus")
+    code, _, err = run_cli(capsys, "run", "sql-expert", "--var", "dialect=x", "--user", "q")
+    assert code == 2 and "unknown backend 'bogus'" in err
+    with pytest.raises(SystemExit):  # argparse: the flags are mutually exclusive
+        main(["run", "sql-expert", "--offline", "--replay", "x.jsonl"])
+
+
+def test_key_error_mentions_offline(capsys):
+    code, _, err = run_cli(capsys, "run", "sql-expert", "--var", "dialect=x", "--user", "q")
+    assert code == 2 and "--offline" in err
+
+
+# -- runner ----------------------------------------------------------------- #
+def test_runner_render_and_run_with_backends():
+    from promptlab.backends import ScriptedClient
+    from promptlab.runner import default_library, render_prompt, run_prompt
+
+    assert "coding-assistant" in default_library().names()
+    assert "PostgreSQL" in render_prompt("sql-expert", {"dialect": "PostgreSQL"})
+    client = ScriptedClient(["ok"])
+    assert run_prompt("sql-expert", {"dialect": "x"}, user_input="q", client=client) == "ok"
+    assert client.calls[0]["messages"][0]["content"].startswith("You are a SQL expert writing x.")
+    assert client.calls[0]["messages"][1]["content"] == "q"
+    out = run_prompt("interviewer", {"role": "analyst"}, backend="mock")
+    assert "Request: Begin." in out and "analyst position" in out

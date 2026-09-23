@@ -15,8 +15,9 @@ import re
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 
+from ..backends import ScriptedClient
 from .chain_of_thought import build_messages, clean_answer, parse_final_answer
-from ._common import get_client, run_demo
+from ._common import demo_main, get_client
 
 # A leading number: optional sign and currency, thousands separators, decimals,
 # an optional percent. It must be followed by the end, whitespace or a closing
@@ -78,19 +79,47 @@ def run(question, *, n=5, client=None, temperature=0.7):
     return winner, answers, votes
 
 
-def main():
+DEMO_QUESTION = (
+    "I have 5 boxes. Three boxes hold 8 apples each and two hold 5 "
+    "apples each. I give away 11 apples. How many apples remain?"
+)
+
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model).
+
+    Five sampled reasoning paths: four reach 23 (formatted three different
+    ways, as real samples are) and one makes an addition slip and says 24.
+    Normalisation has to merge the formats for the vote to be right.
+    """
+    return ScriptedClient(
+        [
+            "3 boxes x 8 = 24 apples; 2 boxes x 5 = 10 apples; 34 in total.\n34 - 11 = 23.\n"
+            "Final answer: 23",
+            "Total: 24 + 10 = 34. After giving away 11, 34 - 11 = 23 remain.\n**Final answer:** **23**",
+            "8 + 8 + 8 = 24 and 5 + 5 = 10, so 34 apples; minus 11 leaves 23.\nFinal answer: 23 apples",
+            "Three boxes of 8 is 24, two boxes of 5 is 10, 24 + 10 = 35, and 35 - 11 = 24.\n"
+            "Final answer: 24",
+            "There are 34 apples, and 34 - 11 = 23.\nFinal answer: 23.",
+        ]
+    )
+
+
+def main(argv=None):
     def demo():
-        q = (
-            "I have 5 boxes. Three boxes hold 8 apples each and two hold 5 "
-            "apples each. I give away 11 apples. How many apples remain?"
-        )
-        winner, answers, votes = run(q, n=5)
+        winner, answers, votes = run(DEMO_QUESTION, n=5)
         print("Sampled answers: {}".format(answers))
         print("Vote counts: {}".format(dict(votes)))
         print("Majority answer: {}".format(winner))
 
-    run_demo("Self-consistency (sample N, majority vote)", demo)
+    return demo_main(
+        "Self-consistency (sample N, majority vote)",
+        demo,
+        module="self_consistency",
+        demo_client=demo_client,
+        argv=argv,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

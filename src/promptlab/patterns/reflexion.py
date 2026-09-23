@@ -11,7 +11,8 @@ comes from -- make its criteria concrete.
 
 from __future__ import annotations
 
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 DRAFT_SYSTEM = "You are a capable assistant. Answer the request as well as you can."
 
@@ -73,16 +74,55 @@ def run(request, *, client=None, criteria=None, temperature=0.4):
     return {"draft": draft, "critique": critique, "revised": revised}
 
 
-def main():
+DEMO_REQUEST = (
+    "Write a two-sentence product description for a stainless-steel water bottle aimed at hikers."
+)
+
+
+def _system_is(prompt):
+    return lambda messages: messages[0]["content"] == prompt
+
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model).
+
+    One rule per phase, keyed on that phase's system prompt, so each of the
+    three passes receives the matching text.
+    """
+    return ScriptedClient(
+        rules=[
+            (
+                _system_is(DRAFT_SYSTEM),
+                "Our stainless-steel water bottle is great for hikers. It keeps drinks cold and is very durable.",
+            ),
+            (
+                _system_is(CRITIQUE_SYSTEM),
+                "- Vague: 'great' and 'very durable' say nothing checkable; name the insulation time and "
+                "the steel grade.\n"
+                "- Misses what hikers weigh up: carry weight and whether the lid leaks in a pack.\n"
+                "- Meets the two-sentence limit, but the second sentence is generic filler.",
+            ),
+            (
+                _system_is(REVISE_SYSTEM),
+                "Double-walled 18/8 stainless steel keeps water cold for 24 hours on the trail, and the "
+                "leak-proof lid clips to any pack strap. At 340 g it is light enough for long climbs and "
+                "tough enough to survive a drop onto granite.",
+            ),
+        ]
+    )
+
+
+def main(argv=None):
     def demo():
-        request = "Write a two-sentence product description for a stainless-steel water bottle aimed at hikers."
-        out = run(request)
+        out = run(DEMO_REQUEST)
         print("DRAFT:\n{}\n".format(out["draft"]))
         print("CRITIQUE:\n{}\n".format(out["critique"]))
         print("REVISED:\n{}".format(out["revised"]))
 
-    run_demo("Reflexion (draft, critique, revise)", demo)
+    return demo_main(
+        "Reflexion (draft, critique, revise)", demo, module="reflexion", demo_client=demo_client, argv=argv
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

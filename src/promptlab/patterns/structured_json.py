@@ -15,7 +15,8 @@ from __future__ import annotations
 import json
 import re
 
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 SYSTEM = (
     "You extract structured data. Respond with a single JSON object only -- no "
@@ -139,27 +140,54 @@ def build_messages(text, schema):
     ]
 
 
-def run(text, schema, *, client=None, temperature=0.0):
+def run(text, schema, *, client=None, temperature=0.0, verbose=False):
+    """Ask for JSON, extract it defensively and validate it against ``schema``.
+
+    Raises ``ValueError`` when no JSON can be extracted and
+    ``JSONValidationError`` when it does not match the schema.
+    """
     client = client or get_client()
     raw = client.chat(build_messages(text, schema), temperature=temperature, max_tokens=400)
+    if verbose:
+        print("RAW MODEL OUTPUT:\n{}\n".format(raw))
     obj = extract_json(raw)
     return validate_schema(obj, schema)
 
 
-def main():
+DEMO_SCHEMA = {
+    "name": {"type": "string", "required": True},
+    "role": {"type": "string", "required": True},
+    "years_experience": {"type": "integer", "required": False},
+    "remote": {"type": "boolean", "required": False},
+}
+DEMO_TEXT = "Priya Nair is a senior data engineer with 8 years of experience, based remotely."
+
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model).
+
+    It ignores the "JSON only" instruction the way models often do: prose
+    around the object and a stray ``{braces}`` aside, which a first-``{``-to-
+    last-``}`` extractor could not parse.
+    """
+    return ScriptedClient(
+        [
+            'Here is the record: {"name": "Priya Nair", "role": "senior data engineer", '
+            '"years_experience": 8, "remote": true} -- I left out {location} since only "remotely" '
+            "was stated."
+        ]
+    )
+
+
+def main(argv=None):
     def demo():
-        schema = {
-            "name": {"type": "string", "required": True},
-            "role": {"type": "string", "required": True},
-            "years_experience": {"type": "integer", "required": False},
-            "remote": {"type": "boolean", "required": False},
-        }
-        text = "Priya Nair is a senior data engineer with 8 years of experience, based remotely."
-        result = run(text, schema)
+        result = run(DEMO_TEXT, DEMO_SCHEMA, verbose=True)
         print("VALIDATED JSON:\n{}".format(json.dumps(result, indent=2)))
 
-    run_demo("Structured JSON (extract + validate)", demo)
+    return demo_main(
+        "Structured JSON (extract + validate)", demo, module="structured_json", demo_client=demo_client, argv=argv
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

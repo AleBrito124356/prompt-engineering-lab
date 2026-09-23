@@ -48,6 +48,8 @@ Criteria: {criteria}
 --- Response 2 ---
 {second}
 
+--- End of responses ---
+
 Briefly explain which response is better and why (2-3 sentences), then finish
 with exactly one line: 'Winner: 1', 'Winner: 2', or 'Winner: tie'."""
 
@@ -220,7 +222,8 @@ def _truncate(text, width):
     text = " ".join(text.split())
     if len(text) <= width:
         return text
-    return text[: width - 1] + "…"
+    # ASCII on purpose: a Windows cp1252 console cannot print U+2026.
+    return text[: width - 3] + "..."
 
 
 def render_table(results, label_a="A", label_b="B", *, input_width=32, reason_width=44):
