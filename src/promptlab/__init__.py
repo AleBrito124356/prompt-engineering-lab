@@ -9,7 +9,14 @@ requires the ``openai`` package or a network connection.
 from __future__ import annotations
 
 from .frontmatter import load_file, split_frontmatter
-from .prompt import Prompt, PromptError, PromptLibrary
+from .prompt import (
+    BUNDLED_LIBRARY,
+    ContractError,
+    InputSpec,
+    Prompt,
+    PromptError,
+    PromptLibrary,
+)
 from .template import (
     MissingVariableError,
     PartialNotFoundError,
@@ -22,7 +29,7 @@ from .template import (
     render,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Template",
@@ -39,5 +46,8 @@ __all__ = [
     "Prompt",
     "PromptLibrary",
     "PromptError",
+    "ContractError",
+    "InputSpec",
+    "BUNDLED_LIBRARY",
     "__version__",
 ]

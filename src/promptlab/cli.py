@@ -3,15 +3,20 @@
 Commands
 --------
   list                        List library prompts with their purpose.
-  show NAME [--version V]      Print a prompt's metadata and body.
+  show NAME [--version V]      Print a prompt's metadata, input contract and body.
   render NAME [vars]           Render a prompt to text (no network).
   run NAME [vars] [--user U]   Render as a system prompt and run it on NIM.
   compare A B --inputs FILE    A/B two prompts over an input set, judge-scored.
   diff NAME --a V1 --b V2      Unified diff between two versions.
+  lint [NAME ...]              Check prompts against their declared contracts.
   techniques                   Print the prompt-technique cheat-sheet.
 
 Variables are passed as ``--var key=value`` (repeatable) and/or ``--vars-json
 FILE``. ``A``/``B`` for compare accept ``name`` or ``name@version``.
+
+Exit codes: 0 success, 1 lint findings or a failed model call, 2 usage or
+configuration errors (unknown prompt, missing variable, missing API key...).
+Expected errors print a single ``error: ...`` message, never a traceback.
 """
 
 from __future__ import annotations
@@ -21,23 +26,78 @@ import json
 import sys
 from pathlib import Path
 
+from .backends import ScriptedClient, backend_from_env, make_client
+from .client import BackendError, MissingKeyError
 from .patterns import TECHNIQUES
-from .prompt import PromptError, PromptLibrary
+from .prompt import PromptError, PromptLibrary, default_library_root
+from .template import TemplateError
 
-_DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "library"
+_OFFLINE_NOTE = (
+    "note: offline mode -- responses come from promptlab's scripted mock model, not a live LLM."
+)
+_KEY_HINT = "\n\nNo key yet? Add --offline to run the same command against the scripted mock backend."
+
+
+class CLIError(Exception):
+    """A usage error: printed as ``error: <message>`` and exit code 2."""
+
+
+def _backend_spec(args):
+    if getattr(args, "offline", False):
+        return "mock"
+    if getattr(args, "record", None):
+        return "record:" + args.record
+    if getattr(args, "replay", None):
+        return "replay:" + args.replay
+    return backend_from_env()
+
+
+def _make_client(args, model=None):
+    """Client for ``run``/``compare`` from --offline/--record/--replay or $PROMPTLAB_BACKEND."""
+    try:
+        client = make_client(_backend_spec(args), model=model)
+    except ValueError as exc:
+        raise CLIError(str(exc)) from None
+    except BackendError as exc:  # e.g. the replay cassette does not exist
+        raise CLIError(str(exc)) from None
+    return client
+
+
+def _note_offline(*clients):
+    if any(isinstance(c, ScriptedClient) for c in clients):
+        print(_OFFLINE_NOTE, file=sys.stderr)
+
+
+def _library_root(args):
+    return Path(getattr(args, "library", None) or default_library_root())
 
 
 def _library(args):
-    return PromptLibrary(getattr(args, "library", None) or _DEFAULT_ROOT)
+    return PromptLibrary(_library_root(args))
 
 
 def _collect_vars(args):
     variables = {}
-    if getattr(args, "vars_json", None):
-        variables.update(json.loads(Path(args.vars_json).read_text(encoding="utf-8")))
+    path = getattr(args, "vars_json", None)
+    if path:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise CLIError("--vars-json file not found: {}".format(path)) from None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise CLIError("--vars-json {}: invalid JSON ({})".format(path, exc)) from None
+        if not isinstance(data, dict):
+            raise CLIError(
+                "--vars-json {}: expected a JSON object of variables, got {}".format(
+                    path, type(data).__name__
+                )
+            )
+        variables.update(data)
     for pair in getattr(args, "var", None) or []:
         if "=" not in pair:
-            raise SystemExit("--var expects key=value, got {!r}".format(pair))
+            raise CLIError("--var expects key=value, got {!r}".format(pair))
         key, value = pair.split("=", 1)
         variables[key.strip()] = value
     return variables
@@ -51,14 +111,41 @@ def _split_ref(ref):
 
 
 def _read_inputs(path):
-    text = Path(path).read_text(encoding="utf-8")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise CLIError("inputs file not found: {}".format(path)) from None
     stripped = text.strip()
     if stripped.startswith("[") or stripped.startswith("{"):
-        data = json.loads(stripped)
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise CLIError("inputs file {}: invalid JSON ({})".format(path, exc)) from None
         if isinstance(data, dict):
             data = data.get("inputs", [])
-        return [str(x) for x in data]
-    return [line for line in (l.strip() for l in text.splitlines()) if line]
+        if not isinstance(data, list):
+            raise CLIError("inputs file {}: expected a JSON array or {{\"inputs\": [...]}}".format(path))
+        inputs = [str(x) for x in data if str(x).strip()]
+    else:
+        inputs = [line for line in (raw.strip() for raw in text.splitlines()) if line]
+    if not inputs:
+        raise CLIError("inputs file {} contains no inputs".format(path))
+    return inputs
+
+
+def _render_checked(prompt, variables, version, *, strict=True, hint_no_strict=False):
+    """Render with the contract applied, turning missing names into a CLIError."""
+    if strict:
+        missing = prompt.missing(variables, version=version)
+        if missing:
+            raise CLIError(
+                "{}: missing variables: {} (pass --var key=value{})".format(
+                    prompt.ref(version),
+                    ", ".join(missing),
+                    " or --no-strict" if hint_no_strict else "",
+                )
+            )
+    return prompt.render(variables, version=version, strict=strict)
 
 
 # --------------------------------------------------------------------------- #
@@ -71,12 +158,24 @@ def cmd_list(args):
         print("No prompts found in {}".format(lib.root))
         return 0
     width = max(len(r["name"]) for r in rows)
+    vwidth = max(len(",".join(r["versions"])) + 2 for r in rows)
     for r in rows:
-        versions = ",".join(r["versions"])
-        print("{name:<{w}}  [{versions}]  {purpose}".format(
-            name=r["name"], w=width, versions=versions, purpose=r["purpose"]
+        versions = "[{}]".format(",".join(r["versions"]))
+        print("{name:<{w}}  {versions:<{vw}}  {purpose}".format(
+            name=r["name"], w=width, versions=versions, vw=vwidth, purpose=r["purpose"]
         ))
     return 0
+
+
+def _describe_input(spec):
+    bits = ["required" if spec.required else "optional"]
+    if spec.has_default and spec.default not in ("", None):
+        bits.append("default {!r}".format(spec.default))
+    if spec.enum:
+        bits.append("one of: {}".format(", ".join(str(e) for e in spec.enum)))
+    return "  - {} ({}){}".format(
+        spec.name, "; ".join(bits), "  " + spec.description if spec.description else ""
+    )
 
 
 def cmd_show(args):
@@ -91,6 +190,11 @@ def cmd_show(args):
         print("tags     : {}".format(", ".join(meta["tags"])))
     if meta.get("model_tips"):
         print("model    : {}".format(meta["model_tips"]))
+    specs = prompt.inputs(args.version)
+    if specs:
+        print("inputs   :")
+        for spec in specs:
+            print(_describe_input(spec))
     print("-" * 72)
     print(prompt.body(args.version), end="")
     return 0
@@ -100,54 +204,89 @@ def cmd_render(args):
     lib = _library(args)
     variables = _collect_vars(args)
     prompt = lib.get(args.name)
-    strict = not args.no_strict
-    if strict:
-        missing = prompt.template(args.version).missing(variables)
-        if missing:
-            raise SystemExit(
-                "missing variables: {}\n(pass --var key=value or --no-strict)".format(
-                    ", ".join(missing)
-                )
-            )
-    print(prompt.render(variables, version=args.version, strict=strict))
+    print(_render_checked(prompt, variables, args.version, strict=not args.no_strict, hint_no_strict=True))
     return 0
 
 
 def cmd_run(args):
-    from .runner import run_prompt  # deferred: needs openai only for `run`
-
+    lib = _library(args)
     variables = _collect_vars(args)
-    answer = run_prompt(
-        args.name,
-        variables,
-        user_input=args.user,
-        version=args.version,
-        root=getattr(args, "library", None) or _DEFAULT_ROOT,
-        model=args.model,
-        temperature=args.temperature,
-    )
+    prompt = lib.get(args.name)
+    system = _render_checked(prompt, variables, args.version)
+    client = _make_client(args, model=args.model)
+    _note_offline(client)
+    user = args.user if args.user is not None else "Begin."
+    answer = client.complete(user, system=system, temperature=args.temperature, max_tokens=1024)
     print(answer)
     return 0
 
 
 def cmd_compare(args):
-    from .client import NIMClient
-    from .compare import render_table, run_comparison
+    from .compare import DEFAULT_CRITERIA, render_table, run_comparison, write_report
+
+    for out in args.out or []:
+        if Path(out).suffix.lower() not in (".json", ".md", ".markdown"):
+            raise CLIError("--out must end in .json or .md, got {!r}".format(out))
+    if args.repeats < 1:
+        raise CLIError("--repeats must be at least 1")
+    if not 0 < args.alpha < 1:
+        raise CLIError("--alpha must be between 0 and 1")
 
     lib = _library(args)
     variables = _collect_vars(args)
     name_a, ver_a = _split_ref(args.a)
     name_b, ver_b = _split_ref(args.b)
-    system_a = lib.get(name_a).render(variables, version=ver_a)
-    system_b = lib.get(name_b).render(variables, version=ver_b)
+    prompt_a, prompt_b = lib.get(name_a), lib.get(name_b)
+    system_a = _render_checked(prompt_a, variables, ver_a)
+    system_b = _render_checked(prompt_b, variables, ver_b)
     inputs = _read_inputs(args.inputs)
-    label_a = args.a
-    label_b = args.b
-    client = NIMClient(model=args.model)
+    label_a, label_b = prompt_a.ref(ver_a), prompt_b.ref(ver_b)
+    if label_a == label_b:  # an A/A test is a useful judge sanity check
+        label_a, label_b = label_a + " (A)", label_b + " (B)"
+
+    client = _make_client(args, model=args.model)
+    judge = _make_client(args, model=args.judge_model) if args.judge_model else client
+    _note_offline(client, judge)
+    criteria = args.criteria or DEFAULT_CRITERIA
+
+    def progress(i, n, result):
+        if sys.stderr.isatty():
+            print("\r[{}/{}] judged".format(i, n), end="" if i < n else "\n", file=sys.stderr, flush=True)
+
     results = run_comparison(
-        system_a, system_b, inputs, client=client, label_a=label_a, label_b=label_b, seed=args.seed
+        system_a,
+        system_b,
+        inputs,
+        client=client,
+        judge=judge,
+        label_a=label_a,
+        label_b=label_b,
+        criteria=criteria,
+        temperature=args.temperature,
+        seed=args.seed,
+        both_orders=not args.single_order,
+        repeats=args.repeats,
+        on_progress=progress,
     )
-    print(render_table(results, label_a=label_a, label_b=label_b))
+    print(render_table(results, label_a=label_a, label_b=label_b, alpha=args.alpha))
+    config = {
+        "variant_a": label_a,
+        "variant_b": label_b,
+        "model": getattr(client, "model", None),
+        "judge_model": getattr(judge, "model", None),
+        "backend": _backend_spec(args) or "nim",
+        "judge_orders": "single (seeded shuffle)" if args.single_order else "both (A first, then B first)",
+        "repeats": args.repeats,
+        "temperature": args.temperature,
+        "alpha": args.alpha,
+        "seed": args.seed,
+        "criteria": criteria,
+        "inputs_file": args.inputs,
+        "variables": json.dumps(variables, ensure_ascii=False, sort_keys=True),
+    }
+    for out in args.out or []:
+        path = write_report(out, results, label_a, label_b, alpha=args.alpha, config=config)
+        print("report written: {}".format(path), file=sys.stderr)
     return 0
 
 
@@ -164,28 +303,58 @@ def cmd_diff(args):
     return 0
 
 
+def cmd_lint(args):
+    from .lint import format_json, format_text, has_failures, lint_library
+
+    root = _library_root(args)
+    findings = lint_library(root, args.names or None)
+    checked = len(args.names) if args.names else len(
+        [p for p in root.iterdir() if p.is_dir() and not p.name.startswith((".", "_"))]
+    )
+    if args.format == "json":
+        print(format_json(findings, checked))
+    else:
+        print(format_text(findings, checked))
+    return 1 if has_failures(findings, strict=args.strict) else 0
+
+
 def cmd_techniques(args):
     width = max(len(t["name"]) for t in TECHNIQUES)
     print("{:<{w}}  {:<28}  {}".format("technique", "cost", "when to use", w=width))
     print("-" * 100)
     for t in TECHNIQUES:
         print("{:<{w}}  {:<28}  {}".format(t["name"], t["cost"], t["when"], w=width))
-    print("\nRun a live demo:  python -m promptlab.patterns.<technique>")
+    print("\nRun a live demo:     python -m promptlab.patterns.<technique>")
+    print("Run it offline:      python -m promptlab.patterns.<technique> --offline")
     return 0
 
 
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
+def _add_backend_flags(p):
+    group = p.add_mutually_exclusive_group()
+    group.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use the scripted mock backend: no API key, no network (same as PROMPTLAB_BACKEND=mock).",
+    )
+    group.add_argument("--record", metavar="CASSETTE", help="Call NIM and append every call to a JSONL cassette.")
+    group.add_argument("--replay", metavar="CASSETTE", help="Serve responses from a recorded JSONL cassette.")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="promptlab", description=__doc__.splitlines()[0])
-    parser.add_argument("--library", help="Path to the prompt library (default: bundled library/).")
+    parser.add_argument(
+        "--library",
+        help="Path to a prompt library (default: $PROMPTLAB_LIBRARY or the bundled library).",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list", help="List library prompts.")
     p.set_defaults(func=cmd_list)
 
-    p = sub.add_parser("show", help="Show a prompt's metadata and body.")
+    p = sub.add_parser("show", help="Show a prompt's metadata, inputs and body.")
     p.add_argument("name")
     p.add_argument("--version", "-V")
     p.set_defaults(func=cmd_show)
@@ -194,11 +363,11 @@ def build_parser():
     p.add_argument("name")
     p.add_argument("--version", "-V")
     p.add_argument("--var", action="append", metavar="KEY=VALUE", help="Repeatable.")
-    p.add_argument("--vars-json", metavar="FILE", help="JSON file of variables.")
+    p.add_argument("--vars-json", metavar="FILE", help="JSON file with an object of variables.")
     p.add_argument("--no-strict", action="store_true", help="Render missing variables as empty.")
     p.set_defaults(func=cmd_render)
 
-    p = sub.add_parser("run", help="Render a prompt and run it on NVIDIA NIM.")
+    p = sub.add_parser("run", help="Render a prompt and run it on NVIDIA NIM (or offline).")
     p.add_argument("name")
     p.add_argument("--version", "-V")
     p.add_argument("--user", "-u", help="The user turn to send.")
@@ -206,16 +375,35 @@ def build_parser():
     p.add_argument("--vars-json", metavar="FILE")
     p.add_argument("--model", help="Override NIM_MODEL.")
     p.add_argument("--temperature", type=float, default=0.3)
+    _add_backend_flags(p)
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("compare", help="A/B two prompts, judge-scored.")
+    p = sub.add_parser(
+        "compare",
+        help="A/B two prompts: both-order judging, win rate with CI, sign test.",
+        description="Run two prompt versions over an input set and let a judge pick the better answer. "
+        "Each pair is judged in both orders to cancel position bias; the verdict names a winner only "
+        "when a two-sided sign test is significant at --alpha.",
+    )
     p.add_argument("a", help="Prompt A as name or name@version.")
     p.add_argument("b", help="Prompt B as name or name@version.")
     p.add_argument("--inputs", required=True, metavar="FILE", help="JSON array or newline-delimited inputs.")
     p.add_argument("--var", action="append", metavar="KEY=VALUE")
     p.add_argument("--vars-json", metavar="FILE")
-    p.add_argument("--model", help="Override NIM_MODEL.")
-    p.add_argument("--seed", type=int, default=None, help="Seed for judge order shuffling.")
+    p.add_argument("--model", help="Model for the two variants (overrides NIM_MODEL).")
+    p.add_argument("--judge-model", metavar="MODEL", help="A different judge model (avoids self-preference).")
+    p.add_argument("--criteria", metavar="TEXT", help="What the judge should weigh (default: helpfulness, "
+                   "factual correctness and instruction following).")
+    p.add_argument("--repeats", type=int, default=1, metavar="N",
+                   help="Sample each variant N times per input; the input's winner is the majority.")
+    p.add_argument("--single-order", action="store_true",
+                   help="Judge each pair once in a random order (faster, no position-bias check).")
+    p.add_argument("--alpha", type=float, default=0.05, help="Significance level for the verdict (default 0.05).")
+    p.add_argument("--temperature", type=float, default=0.3, help="Sampling temperature for the variants.")
+    p.add_argument("--seed", type=int, default=None, help="Seed for the --single-order shuffle.")
+    p.add_argument("--out", action="append", metavar="FILE",
+                   help="Write a report: .json (full data, reloadable) or .md (readable). Repeatable.")
+    _add_backend_flags(p)
     p.set_defaults(func=cmd_compare)
 
     p = sub.add_parser("diff", help="Diff two versions of a prompt.")
@@ -224,10 +412,21 @@ def build_parser():
     p.add_argument("--b", required=True, help="To version, e.g. v2.")
     p.set_defaults(func=cmd_diff)
 
+    p = sub.add_parser("lint", help="Check prompts against their declared input contracts.")
+    p.add_argument("names", nargs="*", metavar="NAME", help="Prompts to lint (default: all).")
+    p.add_argument("--format", choices=("text", "json"), default="text")
+    p.add_argument("--strict", action="store_true", help="Fail on warnings too.")
+    p.set_defaults(func=cmd_lint)
+
     p = sub.add_parser("techniques", help="Print the technique cheat-sheet.")
     p.set_defaults(func=cmd_techniques)
 
     return parser
+
+
+def _error(message, code):
+    print("error: {}".format(message), file=sys.stderr)
+    return code
 
 
 def main(argv=None):
@@ -235,12 +434,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except PromptError as exc:
-        print("error: {}".format(exc), file=sys.stderr)
-        return 2
+    except (CLIError, PromptError, TemplateError) as exc:
+        return _error(exc, 2)
+    except MissingKeyError as exc:
+        return _error(str(exc) + _KEY_HINT, 2)
+    except BackendError as exc:
+        return _error(exc, 1)
     except FileNotFoundError as exc:
-        print("error: file not found: {}".format(exc), file=sys.stderr)
-        return 2
+        return _error("file not found: {}".format(exc.filename or exc), 2)
+    except KeyboardInterrupt:
+        return _error("interrupted", 130)
 
 
 if __name__ == "__main__":

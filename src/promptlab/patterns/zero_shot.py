@@ -12,7 +12,8 @@ length) does most of the work.
 
 from __future__ import annotations
 
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 SYSTEM = "You are a precise, concise assistant. Follow the instruction exactly."
 
@@ -40,16 +41,32 @@ def run(task, *, client=None, role=None, constraints=None, temperature=0.3):
     return client.chat(messages, temperature=temperature)
 
 
-def main():
-    def demo():
-        task = "Explain what an idempotent HTTP method is to a junior developer."
-        print("PROMPT (user turn):")
-        print(build_messages(task)[-1]["content"])
-        print("\nRESPONSE:")
-        print(run(task, constraints=["Under 80 words", "Give one concrete example"]))
+DEMO_TASK = "Explain what an idempotent HTTP method is to a junior developer."
+DEMO_CONSTRAINTS = ["Under 80 words", "Give one concrete example"]
 
-    run_demo("Zero-shot prompting", demo)
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model)."""
+    return ScriptedClient(
+        [
+            "An idempotent HTTP method is one you can repeat without changing the result "
+            "after the first call. Example: `PUT /users/42` with the same body leaves user 42 "
+            "in the same state whether you send it once or five times. `POST /orders` is not "
+            "idempotent: every retry can create another order. That is why clients can safely "
+            "retry PUT and DELETE after a timeout."
+        ]
+    )
+
+
+def main(argv=None):
+    def demo():
+        print("PROMPT (user turn):")
+        print(build_messages(DEMO_TASK, constraints=DEMO_CONSTRAINTS)[-1]["content"])
+        print("\nRESPONSE:")
+        print(run(DEMO_TASK, constraints=DEMO_CONSTRAINTS))
+
+    return demo_main("Zero-shot prompting", demo, module="zero_shot", demo_client=demo_client, argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

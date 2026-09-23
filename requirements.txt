@@ -5,3 +5,4 @@ python-dotenv>=1.0.0   # load NVIDIA_API_KEY from a local .env (optional but han
 
 # Development / tests
 pytest>=8.0.0
+pytest-cov>=4.0         # coverage report: pytest --cov=promptlab

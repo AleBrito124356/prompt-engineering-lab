@@ -1,6 +1,7 @@
 name: interviewer
 title: Technical Interviewer
-latest: v1
+latest: v2
 tags: [interview, hiring, coaching]
 changelog:
   v1: Initial one-question-at-a-time technical interviewer.
+  v2: Make level optional (guarded, so omitting it no longer leaves 'a  backend engineer') and calibrate difficulty when it is absent.

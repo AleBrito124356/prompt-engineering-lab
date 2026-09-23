@@ -11,7 +11,8 @@ Keep them short, diverse, and representative of the edge cases you care about.
 from __future__ import annotations
 
 from ..template import few_shot
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 SYSTEM = (
     "You label the sentiment of a product review as positive, negative, or "
@@ -43,16 +44,23 @@ def run(task, examples=None, *, client=None, temperature=0.0):
     return client.chat(build_messages(task, examples), temperature=temperature)
 
 
-def main():
-    def demo():
-        task = "The design is beautiful but shipping took three weeks."
-        print("PROMPT (user turn):")
-        print(build_messages(task)[-1]["content"])
-        print("\nRESPONSE:")
-        print(run(task))
+DEMO_TASK = "The design is beautiful but shipping took three weeks."
 
-    run_demo("Few-shot prompting", demo)
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model)."""
+    return ScriptedClient(["mixed"])
+
+
+def main(argv=None):
+    def demo():
+        print("PROMPT (user turn):")
+        print(build_messages(DEMO_TASK)[-1]["content"])
+        print("\nRESPONSE:")
+        print(run(DEMO_TASK))
+
+    return demo_main("Few-shot prompting", demo, module="few_shot", demo_client=demo_client, argv=argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

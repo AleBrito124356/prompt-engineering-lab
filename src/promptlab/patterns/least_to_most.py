@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import re
 
-from ._common import get_client, run_demo
+from ..backends import ScriptedClient
+from ._common import demo_main, get_client
 
 DECOMPOSE_SYSTEM = (
     "You break a problem into an ordered list of simpler sub-problems that build "
@@ -76,13 +77,35 @@ def run(problem, *, client=None, temperature=0.2, max_subproblems=6):
     return {"subproblems": subproblems, "solved": solved, "final": final}
 
 
-def main():
+DEMO_PROBLEM = (
+    "A tank fills at 4 liters/min and drains at 1.5 liters/min. It starts "
+    "empty and holds 200 liters. How long until it overflows?"
+)
+
+
+def demo_client():
+    """Scripted model output for ``--offline`` (illustrative, not a live model).
+
+    The decomposition comes back as prose plus a numbered list, which
+    ``parse_subproblems`` has to pick out; each solve call then sees the
+    earlier answers in its prompt.
+    """
+    return ScriptedClient(
+        [
+            "Here is the breakdown:\n"
+            "1. What is the net rate at which the tank gains water?\n"
+            "2) How many liters must accumulate before it overflows?\n"
+            "3. How long does that take at the net rate?",
+            "It gains 4 - 1.5 = 2.5 liters per minute.",
+            "It starts empty and holds 200 liters, so 200 liters must accumulate.",
+            "200 liters / 2.5 liters per minute = 80 minutes, so it overflows after 80 minutes (1 h 20 min).",
+        ]
+    )
+
+
+def main(argv=None):
     def demo():
-        problem = (
-            "A tank fills at 4 liters/min and drains at 1.5 liters/min. It starts "
-            "empty and holds 200 liters. How long until it overflows?"
-        )
-        out = run(problem)
+        out = run(DEMO_PROBLEM)
         print("SUB-PROBLEMS:")
         for i, sp in enumerate(out["subproblems"], 1):
             print("  {}. {}".format(i, sp))
@@ -91,8 +114,10 @@ def main():
             print("  - {} -> {}".format(q, a))
         print("\nFINAL: {}".format(out["final"]))
 
-    run_demo("Least-to-most prompting", demo)
+    return demo_main(
+        "Least-to-most prompting", demo, module="least_to_most", demo_client=demo_client, argv=argv
+    )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
